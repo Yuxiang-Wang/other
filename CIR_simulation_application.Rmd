@@ -1,0 +1,241 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+Part I  non exact simulation and its convergency
+```{r}
+sigma=1
+alpha=0.4
+b=0.1
+r0=0.05
+T=1
+r1=matrix(rep(0),nrow=10000,ncol=8)  #1year simulated value with different intervals
+n=c(5,7,10,14,20,30,50,100) #intervals
+for(int in 1:8){
+  dt=T/n[int]
+for(j in 1:10000){
+  temp_r=r0
+  for(t in 1:n[int]){
+  temp_r=temp_r+alpha*(b-temp_r)*dt+sigma*sqrt(temp_r)*rnorm(1,0,1)*sqrt(dt)
+  if(temp_r<=0) temp_r=-temp_r
+  }
+  r1[j,int]=temp_r
+}
+}
+euler_result=apply(r1,2,mean)
+```
+
+```{r}
+sigma=1
+alpha=0.4
+b=0.1
+r0=0.05
+d=4*b*alpha/(sigma^2)
+c=sigma^2*(1-exp(-alpha))/(4*alpha)
+lambda=4*alpha*exp(-alpha)/(sigma^2*(1-exp(-alpha)))*r0
+N=rpois(10000,lambda/2)
+r1=c*sapply(N,function(x) rchisq(1,d+2*x))
+mean(r1)
+```
+
+
+
+
+Part II application1: stochasitc volatility
+```{r}
+sigma=0.3
+alpha=0.5
+rho=-0.9
+T=10
+v0=0.04
+b=0.04
+x0=100
+k=70
+r=0.02
+d=4*b*alpha/(sigma^2)
+c=sigma^2*(1-exp(-alpha))/(4*alpha)
+v=matrix(rep(0),nrow=10000,ncol=11)
+v[,1]=v0
+x=matrix(rep(0),nrow=10000,ncol=11)
+x[,1]=x0
+for(j in 1:10000){
+for(t in 2:11){
+lambda=4*alpha*exp(-alpha)/(sigma^2*(1-exp(-alpha)))*v[j,t-1]
+N=rpois(1,lambda/2)
+v[j,t]=c*sapply(N, function(x) rchisq(1,d+2*x))
+inter_v=0.5*v[j,t-1]+0.5*v[j,t]
+lns=log(x[j,t-1])+r+sigma^-1*rho*(v[j,t]-v[j,t-1]-alpha*b*1)+(rho*alpha/sigma-0.5)*inter_v+sqrt(1-rho^2)*rnorm(1,0,sqrt(inter_v))
+x[j,t]=exp(lns)
+}
+}
+```
+
+```{r}
+#calculate option price
+hist(x[,11])
+payoff=sapply(x[,11],function(x) max(x-k,0))
+price=mean(payoff)*exp(-T*r)
+print(price)
+```
+
+```{r}
+#volatility surface
+bs=function(k,ttm,sigma,cp){
+  d1=(log(x0/k)+(r+0.5*sigma*sigma)*ttm)/(sigma*sqrt(ttm))
+  d2=(log(x0/k)+(r-0.5*sigma*sigma)*ttm)/(sigma*sqrt(ttm))
+  if(cp=='C'){return(x0*pnorm(d1)-k*exp(-r*ttm)*pnorm(d2))}
+  if(cp=='P'){return (-x0*pnorm(-d1)+k*exp(-r*ttm)*pnorm(-d2))}
+}
+
+option_price=function(k,ttm,cp){
+dt=ttm/10
+d=4*b*alpha/(sigma^2)
+c=sigma^2*(1-exp(-alpha*dt))/(4*alpha)
+v=matrix(rep(0),nrow=10000,ncol=11)
+v[,1]=v0
+x=matrix(rep(0),nrow=10000,ncol=11)
+x[,1]=x0
+for(j in 1:10000){
+for(t in 2:11){
+lambda=4*alpha*exp(-alpha*dt)/(sigma^2*(1-exp(-alpha*dt)))*v[j,t-1]
+N=rpois(1,lambda/2)
+v[j,t]=c*sapply(N, function(x) rchisq(1,d+2*x))
+inter_v=(0.5*v[j,t-1]+0.5*v[j,t])*dt
+lns=log(x[j,t-1])+r*dt+sigma^-1*rho*(v[j,t]-v[j,t-1]-alpha*b*dt)+(rho*alpha/sigma-0.5)*inter_v+sqrt(1-rho^2)*rnorm(1,0,sqrt(inter_v))
+x[j,t]=exp(lns)
+}
+}
+  price=c()
+  for(step in 1:10){
+  if(cp=='C'){payoff=sapply(x[,step+1],function(x) max(x-k,0))}
+  if(cp=='P'){payoff=sapply(x[,step+1], function(x) max(k-x,0))}
+  price[step]=exp(-r*dt*step)*mean(payoff)}
+  return(price)
+}
+
+implied_vol=function(k,ttm,cp,price){
+  imp_vol=uniroot(function(x) bs(k,ttm,x,cp)-price,c(-1,2))
+  return(imp_vol$root)
+}
+
+option_price(70,10,'C')
+```
+
+```{r}
+strike=seq(10,200,10)
+kk=1
+stk=c()
+ttm=c()
+vol=c()
+for(i in 1:20){
+  price=option_price(strike[i],10,'P')
+  for(t in 1:10){
+    stk[kk]=strike[i]
+    ttm[kk]=t
+    vol[kk]=implied_vol(strike[i],t,'P',price[t])
+    kk=kk+1
+  }
+}
+```
+```{r}
+rgl::plot3d(stk,ttm,vol,xlab='strike',ylab='maturity',zlab='implied_vol',col = rainbow(1000),type='s')
+```
+
+
+
+part III application2:yield curve calibration and bond option pricing
+```{r}
+yield_curve=c(2.21,2.28,2.32,2.49,2.67,2.84,2.91,2.96,3.06,3.14,3.29,3.38)/100
+maturity=c(1/12,2/12,3/12,6/12,1,2,3,5,7,10,20,30)
+bond=c()
+for(i in 1:12){
+  bond[i]=1/(1+yield_curve[i])^(maturity[i])
+}
+bond_price=function(params){
+  k=params[1]
+  b=params[2]
+  sigma=params[3]
+  h=sqrt(k^2+2*sigma^2)
+  P=c()
+  i=1
+  for(T in maturity){
+    A=((2*h*exp((k+h)*T/2))/((k+h)*(exp(h*T)-1)+2*h))^(2*k*b/sigma^2)
+    B=2*(exp(h*T)-1)/((k+h)*(exp(h*T)-1)+2*h)
+    P[i]=A*exp(-r0*B)
+    i=i+1
+  }
+  return(P)
+}
+#calibration
+#minimize the sum of square error botween bond price derived from yield curve and model price
+ssr=function(params){
+  s=0
+  model_price=bond_price(params)
+  for(i in 1:12){
+    s=s+(bond[i]-model_price[i])^2
+  }
+  return(s)
+}
+sigma=0.1
+alpha=0.07
+b=0.04
+r0=0.0221
+param=optim(c(alpha,b,sigma),ssr)$par
+cat('alpha= ',param[1],'\n')
+cat('b= ', param[2],'\n')
+cat('sigma= ', param[3],'\n')
+```
+
+```{r}
+# pricing bond option by simulation 
+alpha=param[1]
+b=param[2]
+sigma=param[3]
+h=sqrt(alpha^2+2*sigma^2)
+r_matrix=matrix(rep(0),nrow=10000,ncol=10)
+r_matrix[,1]=r0
+p_matrix=matrix(rep(0),nrow=10000,ncol=10) # 1 year discount rate
+p_matrix[,1]=1/(1+0.0267)
+d=4*b*alpha/(sigma^2)
+c=sigma^2*(1-exp(-alpha))/(4*alpha)
+#simulate instantaneous interest rate for evrery 1 year over 10 years
+for(j in 1:10000){
+    for(t in 2:10){
+  lambda=4*alpha*exp(-alpha)/(sigma^2*(1-exp(-alpha)))*r_matrix[j,t-1]
+  N=rpois(1,lambda/2)
+  r_matrix[j,t]=c*sapply(N,function(x) rchisq(1,d+2*x))
+  A=((2*h*exp((alpha+h)/2))/((alpha+h)*(exp(h)-1)+2*h))^(2*alpha*b/sigma^2)
+  B=2*(exp(h)-1)/((alpha+h)*(exp(h)-1)+2*h)
+  p_matrix[j,t]=A*exp(-r_matrix[j,t]*B)
+  }
+}
+#bond option information
+#5-year option to call the bond at face value.The underlying bond is 10y coupon bond with a face value of 100 and coupon rate of 6% per year.
+
+coupon=6
+strike=100
+payoff=c()
+for(j in 1:10000){
+  #calculate expected bond price in 5 years
+  expected_price=0
+  for(cf in 6:10){
+    expected_price=expected_price+prod(p_matrix[j,6:cf])*coupon
+  }
+  expected_price=expected_price+prod(p_matrix[j,6:10])*100
+  payoff[j]=prod(p_matrix[j,1:5])*max(0,expected_price-100)
+}
+hist(payoff)
+price=mean(payoff)
+print(price)
+
+
+```
+```{r}
+
+```
+
+
